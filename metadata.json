@@ -1,0 +1,6 @@
+{
+  "name": "Naturelink",
+  "description": "Naturelynk - South Indian botanical and agricultural export catalog featuring certified trade grades for green coffee, Malabar pepper, Alleppey cardamom, and turmeric.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
