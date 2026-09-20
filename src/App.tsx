@@ -26,7 +26,22 @@ import {
   getStoredExportCategories,
   saveStoredExportCategories,
 } from './data/storage';
-import { ShieldCheck, Plus, Bell, X, ArrowUpRight, CheckCircle2 } from 'lucide-react';
+import {
+  subscribeQuotes,
+  saveQuoteToFirestore,
+  updateQuoteInFirestore,
+  deleteQuoteFromFirestore,
+  subscribeExportCategories,
+  saveExportCategoryToFirestore,
+  deleteExportCategoryFromFirestore,
+  subscribeTrustDocs,
+  saveTrustDocToFirestore,
+  deleteTrustDocFromFirestore,
+  subscribeProducts,
+  saveProductToFirestore,
+  deleteProductFromFirestore,
+} from './lib/firebase';
+import { ShieldCheck, Plus, Bell, X, ArrowUpRight, CheckCircle2, Database } from 'lucide-react';
 
 export default function App() {
   // Products, Trust Documents & Quote Leads State (persistent with initial seed)
@@ -46,13 +61,14 @@ export default function App() {
   const [quoteCategory, setQuoteCategory] = useState('Exotic Indoor Flora');
   const [selectedItem, setSelectedItem] = useState<ProductItem | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<TrustDocument | null>(null);
+  const [selectedCatalogCategory, setSelectedCatalogCategory] = useState<string>('all');
   const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
     'quotes' | 'export-catalog' | 'products' | 'trust-docs'
   >('quotes');
 
-  // Sync state to localStorage
+  // Sync state to localStorage as fallback cache
   useEffect(() => {
     saveStoredProducts(products);
   }, [products]);
@@ -68,6 +84,51 @@ export default function App() {
   useEffect(() => {
     saveStoredQuotes(quotes);
   }, [quotes]);
+
+  // Real-time Firestore Cloud Database Synchronization
+  useEffect(() => {
+    const unsubQuotes = subscribeQuotes((items) => {
+      if (items && items.length > 0) {
+        setQuotes(items);
+      }
+    });
+
+    const unsubExportCats = subscribeExportCategories((cats) => {
+      if (cats && cats.length > 0) {
+        setExportCategories(cats);
+      }
+    });
+
+    const unsubTrustDocs = subscribeTrustDocs((docs) => {
+      if (docs && docs.length > 0) {
+        setTrustDocs(docs);
+      }
+    });
+
+    const unsubProducts = subscribeProducts((prods) => {
+      if (prods && prods.length > 0) {
+        setProducts(prods);
+      }
+    });
+
+    return () => {
+      unsubQuotes();
+      unsubExportCats();
+      unsubTrustDocs();
+      unsubProducts();
+    };
+  }, []);
+
+  // Ensure visitors start at the top showing the Hero page
+  useEffect(() => {
+    if ('scrollRestoration' in window.history) {
+      window.history.scrollRestoration = 'manual';
+    }
+    // If no specific anchor is in the URL, guarantee starting at the top
+    if (!window.location.hash || window.location.hash === '#home') {
+      window.scrollTo(0, 0);
+    }
+  }, []);
 
   // Admin access shortcuts (#admin, ?admin=true, or Alt+A / Ctrl+Shift+A)
   useEffect(() => {
@@ -96,9 +157,12 @@ export default function App() {
 
   const unreadQuotesCount = quotes.filter((q) => !q.isRead).length;
 
-  // Quote Submission Handler (Admin gets immediately notified!)
+  // Quote Submission Handler (Persists to Firestore + notifies Admin)
   const handleQuoteSubmitted = (newQuote: QuoteInquiry) => {
     setQuotes((prev) => [newQuote, ...prev]);
+    saveQuoteToFirestore(newQuote).catch((err) =>
+      console.warn('Failed to persist quote to Firestore:', err)
+    );
     // Trigger real-time Admin notification ONLY if admin is logged in
     if (isAdmin) {
       setAdminAlert(newQuote);
@@ -122,39 +186,71 @@ export default function App() {
         return q;
       })
     );
+    const updates: Partial<QuoteInquiry> = { status };
+    if (isRead !== undefined) updates.isRead = isRead;
+    updateQuoteInFirestore(quoteId, updates).catch((err) =>
+      console.warn('Failed to update quote in Firestore:', err)
+    );
   };
 
   const handleDeleteQuote = (quoteId: string) => {
     setQuotes((prev) => prev.filter((q) => q.id !== quoteId));
+    deleteQuoteFromFirestore(quoteId).catch((err) =>
+      console.warn('Failed to delete quote from Firestore:', err)
+    );
   };
 
   const handleMarkAllQuotesRead = () => {
     setQuotes((prev) => prev.map((q) => ({ ...q, isRead: true })));
+    quotes.forEach((q) => {
+      if (!q.isRead) {
+        updateQuoteInFirestore(q.id, { isRead: true }).catch((err) =>
+          console.warn('Failed to mark quote as read in Firestore:', err)
+        );
+      }
+    });
   };
 
-  // Product CRUD Handlers
+  // Product CRUD Handlers (Botanical Nursery Collection)
   const handleAddProduct = (newProduct: ProductItem) => {
     setProducts((prev) => [newProduct, ...prev]);
+    saveProductToFirestore(newProduct).catch((err) =>
+      console.warn('Failed to save product to Firestore:', err)
+    );
   };
 
   const handleUpdateProduct = (updatedProduct: ProductItem) => {
     setProducts((prev) =>
       prev.map((p) => (p.id === updatedProduct.id ? updatedProduct : p))
     );
+    saveProductToFirestore(updatedProduct).catch((err) =>
+      console.warn('Failed to update product in Firestore:', err)
+    );
   };
 
   const handleDeleteProduct = (productId: string) => {
     setProducts((prev) => prev.filter((p) => p.id !== productId));
+    deleteProductFromFirestore(productId).catch((err) =>
+      console.warn('Failed to delete product from Firestore:', err)
+    );
   };
 
   // Export Product Catalog CRUD Handlers (Coffee, Spices & Agricultural Trade Grades)
   const handleAddExportCategory = (category: ProductCategory) => {
     setExportCategories((prev) => [...prev, category]);
+    saveExportCategoryToFirestore(category).catch((err) =>
+      console.warn('Failed to save export category to Firestore:', err)
+    );
   };
 
   const handleUpdateExportCategory = (updatedCat: ProductCategory) => {
     setExportCategories((prev) =>
       prev.map((c) => (c.id === updatedCat.id ? { ...c, ...updatedCat } : c))
+    );
+    const existing = exportCategories.find((c) => c.id === updatedCat.id);
+    const merged = existing ? { ...existing, ...updatedCat } : updatedCat;
+    saveExportCategoryToFirestore(merged).catch((err) =>
+      console.warn('Failed to update export category in Firestore:', err)
     );
   };
 
@@ -171,16 +267,23 @@ export default function App() {
       return;
     }
     setExportCategories((prev) => prev.filter((c) => c.id !== categoryId));
+    deleteExportCategoryFromFirestore(categoryId).catch((err) =>
+      console.warn('Failed to delete export category from Firestore:', err)
+    );
   };
 
   const handleAddExportGrade = (categoryId: string, grade: ProductGradeType) => {
     setExportCategories((prev) =>
       prev.map((cat) => {
         if (cat.id === categoryId) {
-          return {
+          const updated = {
             ...cat,
             types: [...cat.types, grade],
           };
+          saveExportCategoryToFirestore(updated).catch((err) =>
+            console.warn('Failed to add export grade to Firestore:', err)
+          );
+          return updated;
         }
         return cat;
       })
@@ -191,10 +294,14 @@ export default function App() {
     setExportCategories((prev) =>
       prev.map((cat) => {
         if (cat.id === categoryId) {
-          return {
+          const updated = {
             ...cat,
             types: cat.types.map((g) => (g.id === updatedGrade.id ? updatedGrade : g)),
           };
+          saveExportCategoryToFirestore(updated).catch((err) =>
+            console.warn('Failed to update export grade in Firestore:', err)
+          );
+          return updated;
         }
         return cat;
       })
@@ -210,10 +317,14 @@ export default function App() {
     setExportCategories((prev) =>
       prev.map((cat) => {
         if (cat.id === categoryId) {
-          return {
+          const updated = {
             ...cat,
             types: cat.types.filter((g) => g.id !== gradeId),
           };
+          saveExportCategoryToFirestore(updated).catch((err) =>
+            console.warn('Failed to delete export grade from Firestore:', err)
+          );
+          return updated;
         }
         return cat;
       })
@@ -228,16 +339,25 @@ export default function App() {
   // Trust Documents CRUD Handlers
   const handleAddTrustDoc = (newDoc: TrustDocument) => {
     setTrustDocs((prev) => [newDoc, ...prev]);
+    saveTrustDocToFirestore(newDoc).catch((err) =>
+      console.warn('Failed to save trust doc to Firestore:', err)
+    );
   };
 
   const handleUpdateTrustDoc = (updatedDoc: TrustDocument) => {
     setTrustDocs((prev) =>
       prev.map((d) => (d.id === updatedDoc.id ? updatedDoc : d))
     );
+    saveTrustDocToFirestore(updatedDoc).catch((err) =>
+      console.warn('Failed to update trust doc in Firestore:', err)
+    );
   };
 
   const handleDeleteTrustDoc = (docId: string) => {
     setTrustDocs((prev) => prev.filter((d) => d.id !== docId));
+    deleteTrustDocFromFirestore(docId).catch((err) =>
+      console.warn('Failed to delete trust doc from Firestore:', err)
+    );
   };
 
   // Admin Auth Handlers
@@ -271,6 +391,7 @@ export default function App() {
   };
 
   const handleScrollToProducts = () => {
+    setSelectedCatalogCategory('all');
     const el = document.getElementById('products') || document.getElementById('services');
     if (el) {
       el.scrollIntoView({ behavior: 'smooth' });
@@ -300,6 +421,10 @@ export default function App() {
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
               <span className="font-mono text-neutral-300">Admin Mode:</span>
               <span className="font-bold text-white">admin@123</span>
+              <span className="hidden md:inline-flex items-center gap-1 font-mono text-[10px] text-emerald-300 bg-emerald-950/70 border border-emerald-800/80 px-2 py-0.5 rounded-full">
+                <Database className="w-2.5 h-2.5 text-emerald-400" />
+                Firestore Live
+              </span>
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
               <button
@@ -337,12 +462,21 @@ export default function App() {
 
       {/* 1. Header / Navigation Bar */}
       <Navbar
+        categories={exportCategories}
+        onSelectCategory={(catId) => {
+          setSelectedCatalogCategory(catId);
+          const el = document.getElementById('products') || document.getElementById('services');
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth' });
+          }
+        }}
         onOpenQuote={() => handleOpenQuote()}
         isAdmin={isAdmin}
         unreadQuotesCount={unreadQuotesCount}
         onOpenAdminLogin={() => setIsAdminLoginOpen(true)}
         onOpenAdminPanel={() => openAdminQuotesTab()}
         onLogout={handleLogout}
+        onSelectProducts={handleScrollToProducts}
       />
 
       {/* Main Content Sections */}
@@ -361,6 +495,8 @@ export default function App() {
         {/* 4. Products / Export Trade Catalog (Coffee, Pepper, Cardamom, Turmeric Grades) */}
         <ProductLibrarySection
           categories={exportCategories}
+          selectedCategoryId={selectedCatalogCategory}
+          onSelectCategory={(catId) => setSelectedCatalogCategory(catId)}
           isAdmin={isAdmin}
           onEnquire={(gradeName, categoryName) =>
             handleOpenQuote(`${gradeName} — ${categoryName}`)

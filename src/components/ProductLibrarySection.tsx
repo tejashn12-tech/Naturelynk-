@@ -21,6 +21,8 @@ import { ProductCategory, ProductGradeType, ProductSpec } from '../types';
 
 interface ProductLibrarySectionProps {
   categories?: ProductCategory[];
+  selectedCategoryId?: string;
+  onSelectCategory?: (categoryId: string) => void;
   onEnquire: (gradeName: string, categoryName: string) => void;
   isAdmin?: boolean;
   onOpenAdminLogin?: () => void;
@@ -35,6 +37,8 @@ interface ProductLibrarySectionProps {
 
 export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
   categories = defaultCategories,
+  selectedCategoryId: externalSelectedCategoryId,
+  onSelectCategory,
   onEnquire,
   isAdmin = false,
   onOpenAdminLogin,
@@ -47,58 +51,87 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
   onDeleteCategory,
 }) => {
   const activeCategories = categories && categories.length > 0 ? categories : defaultCategories;
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(activeCategories[0].id);
+  const [internalSelectedId, setInternalSelectedId] = useState<string>(
+    externalSelectedCategoryId || 'all'
+  );
 
-  // References for horizontal and vertical scroll-on-select
+  const selectedCategoryId =
+    externalSelectedCategoryId !== undefined ? externalSelectedCategoryId : internalSelectedId;
+
+  // Sync external category changes if any
+  useEffect(() => {
+    if (externalSelectedCategoryId !== undefined) {
+      setInternalSelectedId(externalSelectedCategoryId);
+    }
+  }, [externalSelectedCategoryId]);
+
+  // References for horizontal scroll-on-select
   const categoryPillsRef = useRef<HTMLDivElement>(null);
   const categoryButtonRefs = useRef<{ [key: string]: HTMLButtonElement | null }>({});
+  const isInitialMountRef = useRef<boolean>(true);
 
-  // Smoothly scroll the selected category pill into center view, and scroll overview strip if needed
-  const handleCategorySelect = (categoryId: string) => {
-    setSelectedCategoryId(categoryId);
-
-    // 1. Horizontally scroll the clicked pill to the center of the container
+  // Safely scroll only the category pills horizontal container (never scrolls the window or hero page)
+  const scrollPillToCenter = (categoryId: string) => {
+    const container = categoryPillsRef.current;
     const pillElement = categoryButtonRefs.current[categoryId];
-    if (pillElement) {
-      pillElement.scrollIntoView({
+    if (container && pillElement) {
+      const containerRect = container.getBoundingClientRect();
+      const pillRect = pillElement.getBoundingClientRect();
+      const scrollOffset =
+        pillRect.left - containerRect.left - containerRect.width / 2 + pillRect.width / 2;
+      container.scrollTo({
+        left: container.scrollLeft + scrollOffset,
         behavior: 'smooth',
-        inline: 'center',
-        block: 'nearest',
       });
     }
-
-    // 2. Smoothly scroll the window to bring the active commodity strip and grades into view
-    setTimeout(() => {
-      const activeStrip = document.getElementById('active-product-overview-strip');
-      if (activeStrip) {
-        const navOffset = 90;
-        const rect = activeStrip.getBoundingClientRect();
-        // If the overview strip is not already in prime viewing area, smoothly scroll to it
-        if (rect.top < 70 || rect.top > 280) {
-          const targetY = rect.top + window.pageYOffset - navOffset;
-          window.scrollTo({
-            top: targetY,
-            behavior: 'smooth',
-          });
-        }
-      }
-    }, 60);
   };
 
-  // Auto-scroll pill into view whenever selectedCategoryId changes
+  // User manually clicked on a category pill
+  const handleCategorySelect = (categoryId: string) => {
+    setInternalSelectedId(categoryId);
+    if (onSelectCategory) {
+      onSelectCategory(categoryId);
+    }
+
+    // Scroll only the pills container horizontally
+    scrollPillToCenter(categoryId);
+  };
+
+  // Only scroll pill into view on user-triggered category updates, never on initial page load
   useEffect(() => {
-    if (selectedCategoryId && categoryButtonRefs.current[selectedCategoryId]) {
-      categoryButtonRefs.current[selectedCategoryId]?.scrollIntoView({
-        behavior: 'smooth',
-        inline: 'center',
-        block: 'nearest',
-      });
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      return;
+    }
+
+    if (selectedCategoryId) {
+      scrollPillToCenter(selectedCategoryId);
     }
   }, [selectedCategoryId]);
 
-  // Fallback to first category if current selectedId doesn't exist
+  // Check if "All Products" is selected
+  const isAllSelected = selectedCategoryId === 'all';
+  const totalGradesCount = activeCategories.reduce((acc, cat) => acc + (cat.types?.length || 0), 0);
+
+  // Fallback to first category if current selectedId is a specific category
   const activeCategory: ProductCategory =
     activeCategories.find((c) => c.id === selectedCategoryId) || activeCategories[0];
+
+  // Flattened all grades across all categories with parentCategory pointer
+  const allGrades = activeCategories.flatMap((cat) =>
+    (cat.types || []).map((grade) => ({
+      ...grade,
+      parentCategory: cat,
+    }))
+  );
+
+  // Currently displayed grades in grid
+  const displayedGrades = isAllSelected
+    ? allGrades
+    : (activeCategory.types || []).map((grade) => ({
+        ...grade,
+        parentCategory: activeCategory,
+      }));
 
   // In-Place Category Modal State (Add / Edit Product)
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -204,7 +237,7 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
       if (onAddCategory) {
         onAddCategory(newCat);
       }
-      setSelectedCategoryId(newCat.id);
+      handleCategorySelect(newCat.id);
       showToast('success', `Product "${newCat.name}" added to export library.`);
     } else {
       const updatedCat: ProductCategory = {
@@ -288,11 +321,12 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
   };
 
   // Open Edit Grade Modal
-  const handleOpenEditGrade = (grade: ProductGradeType) => {
+  const handleOpenEditGrade = (grade: ProductGradeType, targetCatId?: string) => {
     requireAdminAuth(() => {
+      const catId = targetCatId || activeCategory.id;
       setGradeFormData({
         id: grade.id,
-        categoryId: activeCategory.id,
+        categoryId: catId,
         name: grade.name,
         shortDescription: grade.shortDescription,
         image: grade.image,
@@ -339,10 +373,11 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
   };
 
   // Delete Grade
-  const handleDeleteGrade = (grade: ProductGradeType) => {
+  const handleDeleteGrade = (grade: ProductGradeType, targetCatId?: string) => {
     requireAdminAuth(() => {
+      const catId = targetCatId || activeCategory.id;
       if (onDeleteGrade) {
-        onDeleteGrade(activeCategory.id, grade.id, grade.name);
+        onDeleteGrade(catId, grade.id, grade.name);
         showToast('success', `Deleted export grade "${grade.name}".`);
       }
     });
@@ -489,8 +524,33 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
         className="flex items-center gap-2 overflow-x-auto pb-3 sm:pb-4 scroll-smooth scrollbar-none mb-6 snap-x snap-proximity scroll-px-3 select-none"
         style={{ scrollBehavior: 'smooth', WebkitOverflowScrolling: 'touch' }}
       >
+        {/* "All Products" Primary Filter Pill */}
+        <button
+          key="all"
+          ref={(el) => {
+            categoryButtonRefs.current['all'] = el;
+          }}
+          onClick={() => handleCategorySelect('all')}
+          className={`px-4 sm:px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold tracking-wide transition-all whitespace-nowrap cursor-pointer flex items-center gap-2 shrink-0 snap-center ${
+            isAllSelected
+              ? 'bg-neutral-950 text-white shadow-md ring-2 ring-neutral-950/20 scale-[1.02]'
+              : 'bg-[#ebeae6] hover:bg-[#dfded9] text-neutral-700 border border-neutral-300/60 hover:scale-[1.01]'
+          }`}
+        >
+          <span>All Products</span>
+          <span
+            className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
+              isAllSelected
+                ? 'bg-neutral-800 text-neutral-200'
+                : 'bg-neutral-200/80 text-neutral-600'
+            }`}
+          >
+            {totalGradesCount}
+          </span>
+        </button>
+
         {activeCategories.map((category) => {
-          const isActive = category.id === activeCategory.id;
+          const isActive = !isAllSelected && category.id === activeCategory.id;
           return (
             <button
               key={category.id}
@@ -531,78 +591,119 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
         )}
       </div>
 
-      {/* 4. Active Category Overview Strip */}
+      {/* 4. Active Category / All Products Overview Strip */}
       {/* Target CSS element: div#root > div > main > section#products > div:nth-of-type(3) */}
       <div
         id="active-product-overview-strip"
         className="bg-[#f0f0ed] border border-neutral-300/80 rounded-2xl p-4 sm:p-6 mb-8 flex flex-col lg:flex-row lg:items-center justify-between gap-5 shadow-xs relative overflow-hidden"
       >
-        {/* Left Side: Product Details */}
-        <div className="flex items-start gap-3.5 max-w-3xl">
-          <div className="w-10 h-10 rounded-xl bg-neutral-950 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
-            <Sparkles className="w-5 h-5 text-emerald-400" />
-          </div>
-          <div>
-            <div className="flex flex-wrap items-center gap-2 mb-1">
-              <h3 className="text-base sm:text-lg font-black text-neutral-950 tracking-tight">
-                {activeCategory.name}
-              </h3>
-              <span className="text-[10px] font-mono font-bold bg-neutral-200 text-neutral-800 px-2.5 py-0.5 rounded-full border border-neutral-300">
-                {activeCategory.types?.length || 0} Standard Grades Registered
-              </span>
+        {isAllSelected ? (
+          /* All Products Overview Mode */
+          <div className="flex items-start gap-3.5 max-w-3xl">
+            <div className="w-10 h-10 rounded-xl bg-neutral-950 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
+              <Sparkles className="w-5 h-5 text-emerald-400" />
             </div>
-            <p className="text-xs sm:text-[13px] text-neutral-600 leading-relaxed">
-              {activeCategory.tagline}
-            </p>
-
-            <div className="flex flex-wrap items-center gap-3 mt-3 pt-2 text-xs text-neutral-600 border-t border-neutral-300/50">
-              <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Phytosanitary Certified</span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <h3 className="text-base sm:text-lg font-black text-neutral-950 tracking-tight">
+                  All Export Commodities & Standard Grades
+                </h3>
+                <span className="text-[10px] font-mono font-bold bg-neutral-200 text-neutral-800 px-2.5 py-0.5 rounded-full border border-neutral-300">
+                  {totalGradesCount} Total Grades Across {activeCategories.length} Origins
+                </span>
               </div>
-              <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Custom Export Packing (Jute / GrainPro / Vacuum)</span>
+              <p className="text-xs sm:text-[13px] text-neutral-600 leading-relaxed">
+                Full Mysore & Malabar export catalog across Coffee, Black Pepper, Green Cardamom, Turmeric, and Dry Ginger with laboratory-verified screen sizes, moisture, and chemical purity specs.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-3 mt-3 pt-2 text-xs text-neutral-600 border-t border-neutral-300/50">
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Phytosanitary & Quarantine Certified</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Custom Export Packing (Jute / GrainPro / Vacuum)</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Agmark & Spice Board Compliant</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          /* Specific Commodity Overview Mode */
+          <div className="flex items-start gap-3.5 max-w-3xl">
+            <div className="w-10 h-10 rounded-xl bg-neutral-950 text-white flex items-center justify-center shrink-0 mt-0.5 shadow-xs">
+              <Sparkles className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <h3 className="text-base sm:text-lg font-black text-neutral-950 tracking-tight">
+                  {activeCategory.name}
+                </h3>
+                <span className="text-[10px] font-mono font-bold bg-neutral-200 text-neutral-800 px-2.5 py-0.5 rounded-full border border-neutral-300">
+                  {activeCategory.types?.length || 0} Standard Grades Registered
+                </span>
+              </div>
+              <p className="text-xs sm:text-[13px] text-neutral-600 leading-relaxed">
+                {activeCategory.tagline}
+              </p>
 
-        {/* Right Side: Admin Control Actions Bar (Exclusively rendered when isAdmin is true) */}
+              <div className="flex flex-wrap items-center gap-3 mt-3 pt-2 text-xs text-neutral-600 border-t border-neutral-300/50">
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Phytosanitary Certified</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Custom Export Packing (Jute / GrainPro / Vacuum)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Right Side: Admin Control Actions Bar */}
         {isAdmin && (
           <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto shrink-0 border-t lg:border-t-0 pt-3 lg:pt-0 border-neutral-300/70">
-            {/* Edit Current Product Commodity */}
-            <button
-              onClick={handleOpenEditCurrentCategory}
-              className="px-3 py-2 text-xs font-bold text-neutral-800 bg-white hover:bg-neutral-100 rounded-xl border border-neutral-300 flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-              title="Edit this commodity's name, origin or description"
-            >
-              <Edit2 className="w-3.5 h-3.5 text-neutral-600" />
-              <span>Edit Product</span>
-            </button>
+            {!isAllSelected && (
+              <>
+                {/* Edit Current Product Commodity */}
+                <button
+                  onClick={handleOpenEditCurrentCategory}
+                  className="px-3 py-2 text-xs font-bold text-neutral-800 bg-white hover:bg-neutral-100 rounded-xl border border-neutral-300 flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                  title="Edit this commodity's name, origin or description"
+                >
+                  <Edit2 className="w-3.5 h-3.5 text-neutral-600" />
+                  <span>Edit Product</span>
+                </button>
 
-            {/* Add Grade to this Product */}
-            <button
-              onClick={() => handleOpenAddGrade(activeCategory.id)}
-              className="px-3.5 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-600 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-              title="Add a new grade under this commodity"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Grade</span>
-            </button>
+                {/* Add Grade to this Product */}
+                <button
+                  onClick={() => handleOpenAddGrade(activeCategory.id)}
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-emerald-700 hover:bg-emerald-600 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                  title="Add a new grade under this commodity"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Grade</span>
+                </button>
+              </>
+            )}
 
             {/* Add New Product Category */}
             <button
               onClick={handleOpenAddNewCategory}
-              className="px-3 py-2 text-xs font-bold text-neutral-800 bg-neutral-200/90 hover:bg-neutral-300 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+              className="px-3.5 py-2 text-xs font-bold text-neutral-800 bg-neutral-200/90 hover:bg-neutral-300 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
               title="Create a new export product commodity"
             >
               <Layers className="w-3.5 h-3.5 text-neutral-700" />
-              <span>New Product</span>
+              <span>New Commodity</span>
             </button>
 
             {/* Delete this Commodity */}
-            {activeCategories.length > 1 && (
+            {!isAllSelected && activeCategories.length > 1 && (
               <button
                 onClick={handleDeleteCurrentCategory}
                 className="p-2 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-xl border border-rose-200 transition-colors cursor-pointer"
@@ -616,15 +717,15 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
       </div>
 
       {/* 5. Responsive Grid: 1 col mobile, 2 col tablet, 3-4 col desktop */}
-      {activeCategory.types && activeCategory.types.length > 0 ? (
+      {displayedGrades && displayedGrades.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 sm:gap-6">
-          {activeCategory.types.map((grade: ProductGradeType) => (
+          {displayedGrades.map((grade) => (
             <div
-              key={grade.id}
+              key={`${grade.parentCategory.id}-${grade.id}`}
               className="bg-[#f0f0ed] hover:bg-[#ebeae6] rounded-[22px] p-4 sm:p-5 flex flex-col justify-between border border-neutral-200/80 shadow-xs hover:shadow-md transition-all duration-300 group relative"
             >
               <div>
-                {/* Card Header Image with Grade Badge */}
+                {/* Card Header Image with Grade Badge & Commodity Tag */}
                 <div className="relative w-full h-44 sm:h-48 rounded-xl overflow-hidden bg-neutral-200 mb-4">
                   <img
                     src={grade.image}
@@ -639,9 +740,16 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent" />
 
-                  {/* Grade Code Badge */}
-                  <div className="absolute top-2.5 left-2.5 bg-neutral-950/90 text-white font-mono text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-md backdrop-blur-xs tracking-wider border border-white/20">
-                    {grade.specs[0]?.value || grade.name}
+                  {/* Badges: Grade Code Badge + Commodity Badge */}
+                  <div className="absolute top-2.5 left-2.5 flex flex-wrap items-center gap-1.5 max-w-[80%]">
+                    <div className="bg-neutral-950/90 text-white font-mono text-[10px] sm:text-[11px] font-bold px-2 py-0.5 rounded-md backdrop-blur-xs tracking-wider border border-white/20 shadow-xs">
+                      {grade.specs[0]?.value || grade.name}
+                    </div>
+                    {isAllSelected && (
+                      <div className="bg-white/95 text-neutral-900 font-sans text-[10px] font-bold px-2 py-0.5 rounded-md backdrop-blur-xs tracking-tight shadow-xs border border-neutral-300/70">
+                        {grade.parentCategory.name.split('(')[0].trim()}
+                      </div>
+                    )}
                   </div>
 
                   {/* In-Card Admin Action Buttons (Admin Only) */}
@@ -650,7 +758,7 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleOpenEditGrade(grade);
+                          handleOpenEditGrade(grade, grade.parentCategory.id);
                         }}
                         className="p-1.5 rounded-lg bg-neutral-950/80 hover:bg-neutral-950 text-white transition-colors backdrop-blur-xs cursor-pointer shadow-xs"
                         title="Edit this grade"
@@ -660,7 +768,7 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDeleteGrade(grade);
+                          handleDeleteGrade(grade, grade.parentCategory.id);
                         }}
                         className="p-1.5 rounded-lg bg-rose-600/90 hover:bg-rose-700 text-white transition-colors backdrop-blur-xs cursor-pointer shadow-xs"
                         title="Delete this grade"
@@ -703,7 +811,7 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
 
               {/* Action: Enquire About This Grade */}
               <button
-                onClick={() => onEnquire(grade.name, activeCategory.name)}
+                onClick={() => onEnquire(grade.name, grade.parentCategory.name)}
                 className="w-full bg-neutral-950 hover:bg-neutral-800 text-white text-xs font-semibold py-2.5 px-4 rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer group/btn shadow-xs"
               >
                 <span>Enquire about this</span>
@@ -715,21 +823,29 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
           {/* "+ Add Grade" Action Card in Grid (Admin Only) */}
           {isAdmin && (
             <div
-              onClick={() => handleOpenAddGrade(activeCategory.id)}
+              onClick={() => {
+                if (isAllSelected) {
+                  handleOpenAddNewCategory();
+                } else {
+                  handleOpenAddGrade(activeCategory.id);
+                }
+              }}
               className="bg-[#f0f0ed]/60 hover:bg-[#f0f0ed] border-2 border-dashed border-neutral-300 hover:border-neutral-400 rounded-[22px] p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all group min-h-[320px]"
             >
               <div className="w-12 h-12 rounded-2xl bg-white group-hover:bg-neutral-950 text-neutral-700 group-hover:text-white flex items-center justify-center shadow-xs transition-colors mb-3">
                 <Plus className="w-6 h-6" />
               </div>
               <h5 className="text-sm font-bold text-neutral-900 mb-1">
-                Add New Export Grade
+                {isAllSelected ? 'Add New Commodity' : 'Add New Export Grade'}
               </h5>
               <p className="text-xs text-neutral-500 max-w-[200px] mb-4 leading-relaxed">
-                Register a new size caliber or processing grade for {activeCategory.name.split('(')[0].trim()}.
+                {isAllSelected
+                  ? 'Register a new agricultural export line in the catalog.'
+                  : `Register a new size caliber or processing grade for ${activeCategory.name.split('(')[0].trim()}.`}
               </p>
               <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 group-hover:underline">
                 <Plus className="w-3.5 h-3.5" />
-                <span>Create Grade</span>
+                <span>{isAllSelected ? 'Create Commodity' : 'Create Grade'}</span>
               </span>
             </div>
           )}
