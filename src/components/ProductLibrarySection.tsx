@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   ArrowUpRight,
   CheckCircle2,
@@ -48,6 +48,53 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
 }) => {
   const activeCategories = categories && categories.length > 0 ? categories : defaultCategories;
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(activeCategories[0].id);
+
+  // References for horizontal and vertical scroll-on-select
+  const categoryPillsRef = useRef<HTMLDivElement>(null);
+  const categoryButtonRefs = useRef<{ [key: string]: HTMLButtonElement | null }>({});
+
+  // Smoothly scroll the selected category pill into center view, and scroll overview strip if needed
+  const handleCategorySelect = (categoryId: string) => {
+    setSelectedCategoryId(categoryId);
+
+    // 1. Horizontally scroll the clicked pill to the center of the container
+    const pillElement = categoryButtonRefs.current[categoryId];
+    if (pillElement) {
+      pillElement.scrollIntoView({
+        behavior: 'smooth',
+        inline: 'center',
+        block: 'nearest',
+      });
+    }
+
+    // 2. Smoothly scroll the window to bring the active commodity strip and grades into view
+    setTimeout(() => {
+      const activeStrip = document.getElementById('active-product-overview-strip');
+      if (activeStrip) {
+        const navOffset = 90;
+        const rect = activeStrip.getBoundingClientRect();
+        // If the overview strip is not already in prime viewing area, smoothly scroll to it
+        if (rect.top < 70 || rect.top > 280) {
+          const targetY = rect.top + window.pageYOffset - navOffset;
+          window.scrollTo({
+            top: targetY,
+            behavior: 'smooth',
+          });
+        }
+      }
+    }, 60);
+  };
+
+  // Auto-scroll pill into view whenever selectedCategoryId changes
+  useEffect(() => {
+    if (selectedCategoryId && categoryButtonRefs.current[selectedCategoryId]) {
+      categoryButtonRefs.current[selectedCategoryId]?.scrollIntoView({
+        behavior: 'smooth',
+        inline: 'center',
+        block: 'nearest',
+      });
+    }
+  }, [selectedCategoryId]);
 
   // Fallback to first category if current selectedId doesn't exist
   const activeCategory: ProductCategory =
@@ -432,17 +479,29 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
       </div>
 
       {/* 3. Category Pill Selectors */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-3 sm:pb-4 scrollbar-none mb-6">
+      <div
+        ref={categoryPillsRef}
+        onWheel={(e) => {
+          if (e.deltaY !== 0 && categoryPillsRef.current) {
+            categoryPillsRef.current.scrollLeft += e.deltaY;
+          }
+        }}
+        className="flex items-center gap-2 overflow-x-auto pb-3 sm:pb-4 scroll-smooth scrollbar-none mb-6 snap-x snap-proximity scroll-px-3 select-none"
+        style={{ scrollBehavior: 'smooth', WebkitOverflowScrolling: 'touch' }}
+      >
         {activeCategories.map((category) => {
           const isActive = category.id === activeCategory.id;
           return (
             <button
               key={category.id}
-              onClick={() => setSelectedCategoryId(category.id)}
-              className={`px-4 sm:px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold tracking-wide transition-all whitespace-nowrap cursor-pointer flex items-center gap-2 shrink-0 ${
+              ref={(el) => {
+                categoryButtonRefs.current[category.id] = el;
+              }}
+              onClick={() => handleCategorySelect(category.id)}
+              className={`px-4 sm:px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold tracking-wide transition-all whitespace-nowrap cursor-pointer flex items-center gap-2 shrink-0 snap-center ${
                 isActive
-                  ? 'bg-neutral-950 text-white shadow-md'
-                  : 'bg-[#ebeae6] hover:bg-[#dfded9] text-neutral-700 border border-neutral-300/60'
+                  ? 'bg-neutral-950 text-white shadow-md ring-2 ring-neutral-950/20 scale-[1.02]'
+                  : 'bg-[#ebeae6] hover:bg-[#dfded9] text-neutral-700 border border-neutral-300/60 hover:scale-[1.01]'
               }`}
             >
               <span>{category.name.split('(')[0].trim()}</span>
@@ -463,7 +522,7 @@ export const ProductLibrarySection: React.FC<ProductLibrarySectionProps> = ({
         {isAdmin && (
           <button
             onClick={handleOpenAddNewCategory}
-            className="px-3.5 py-2 rounded-full text-xs font-bold tracking-wide whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300/70"
+            className="px-3.5 py-2 rounded-full text-xs font-bold tracking-wide whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 shrink-0 snap-center bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300/70"
             title="Add a new commodity product line"
           >
             <Plus className="w-3.5 h-3.5 text-emerald-700" />
